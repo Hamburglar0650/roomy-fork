@@ -527,39 +527,53 @@ class SqliteWorkerSupervisor {
       runSavepoint: async (savepoint) => {
         return this.runSavepoint(savepoint);
       },
-      connectPendingSpaces: async () => {
+      connectPendingSpaces: async (currentSpaceId) => {
         const spacesToConnect = [...this.#pendingSpacesToConnect];
         this.#pendingSpacesToConnect.clear();
 
         console.debug(
-          `Connecting ${spacesToConnect.length} pending space(s):`,
+          `[SqW] Connecting ${spacesToConnect.length} pending space(s):`,
           spacesToConnect,
         );
 
-        // Connect spaces in parallel - one failing/slow space shouldn't block others
-        const results = await Promise.allSettled(
-          spacesToConnect.map((spaceId) => this.connectSpaceStream(spaceId)),
-        );
-
-        // Log any failures for observability
-        results.forEach((result, idx) => {
-          if (result.status === "rejected") {
-            console.error(`Failed to connect space`, {
-              streamId: spacesToConnect[idx],
-              error: result.reason,
-            });
-          }
-        });
-
-        const succeeded = results.filter(
-          (r) => r.status === "fulfilled",
-        ).length;
-        const failed = results.filter((r) => r.status === "rejected").length;
-        if (failed > 0) {
-          console.warn(
-            `Space connection summary: ${succeeded} succeeded, ${failed} failed`,
-          );
+        if (currentSpaceId && spacesToConnect.includes(currentSpaceId)) {
+          // give the active space a 1sec headstart
+          await Promise.race([
+            this.connectSpaceStream(currentSpaceId),
+            new Promise((r) => setTimeout(r, 1000)),
+          ]);
         }
+
+        // Connect spaces in parallel - one failing/slow space shouldn't block others
+        (async () => {
+          const results = await Promise.allSettled(
+            spacesToConnect
+              .filter((s) => s !== currentSpaceId)
+              .map((spaceId) => this.connectSpaceStream(spaceId)),
+          );
+
+          // Log any failures for observability
+          results.forEach((result, idx) => {
+            if (result.status === "rejected") {
+              console.error(`[SqW] Failed to connect space`, {
+                streamId: spacesToConnect[idx],
+                error: result.reason,
+              });
+            }
+          });
+
+          console.log("[SqW] Spaces all connected");
+
+          const succeeded = results.filter(
+            (r) => r.status === "fulfilled",
+          ).length;
+          const failed = results.filter((r) => r.status === "rejected").length;
+          if (failed > 0) {
+            console.warn(
+              `Space connection summary: ${succeeded} succeeded, ${failed} failed`,
+            );
+          }
+        })();
       },
     };
   }
@@ -850,6 +864,34 @@ class SqliteWorkerSupervisor {
           update: true,
         });
       }
+
+      // Set sort_idx for all messages to ensure consistent timestamp ordering.
+      // For bridged messages (e.g., Discord), use timestampOverride.
+      // For regular Roomy messages, use the message's own creation time (ULID timestamp).
+      if (eventMeta.event.$type == "space.roomy.message.createMessage.v0") {
+        let sortTimestamp: number;
+
+        if (
+          eventMeta.event.extensions &&
+          "space.roomy.extension.timestampOverride.v0" in
+            eventMeta.event.extensions
+        ) {
+          // Use Discord timestamp for bridged messages
+          sortTimestamp = Number(
+            eventMeta.event.extensions?.[
+              "space.roomy.extension.timestampOverride.v0"
+            ]?.timestamp,
+          );
+        } else {
+          // Use message's own creation time (encoded in ULID)
+          sortTimestamp = decodeTime(eventMeta.event.id);
+        }
+
+        await this.materializeEntitySortPositionByTimestamp({
+          ulid: eventMeta.event.id,
+          timestamp: sortTimestamp,
+        });
+      }
     }
 
     await executeQuery({ sql: `release bundle${bundleId}` });
@@ -940,6 +982,38 @@ class SqliteWorkerSupervisor {
       );
       return;
     }
+  }
+
+  /** Sets sort_idx for a message based on its timestampOverride extension.
+   * This ensures bridged messages (e.g., from Discord backfill) appear in
+   * timestamp order rather than stream arrival order.
+   *
+   * Creates a ULID directly from the Discord timestamp, which preserves
+   * the exact timestamp ordering.
+   */
+  private async materializeEntitySortPositionByTimestamp({
+    ulid: messageId,
+    timestamp,
+  }: {
+    ulid: Ulid;
+    timestamp: number;
+  }): Promise<void> {
+    // Check if entity exists and already has a sort_idx
+    const existingEntity = (
+      await executeQuery<{
+        sort_idx: string | null;
+      }>(sql`select sort_idx from entities where id = ${messageId}`)
+    ).rows?.[0];
+
+    if (!existingEntity) return;
+    if (existingEntity.sort_idx) return; // Already set
+
+    // Create a ULID directly from the Discord timestamp
+    const sortIdx = ulid(timestamp);
+
+    await executeQuery(
+      sql`update entities set sort_idx = ${sortIdx} where id = ${messageId}`,
+    );
   }
 
   private async runSavepoint(savepoint: Savepoint, depth = 0) {

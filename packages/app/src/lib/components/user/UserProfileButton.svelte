@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { Avatar, Popover, Button } from "@fuxui/base";
+  import { Avatar } from "@foxui/core";
+  import Popover from "$lib/components/ui/popover/Popover.svelte";
+  import Button from "$lib/components/ui/button/Button.svelte";
   import ThemeSettings from "./ThemeSettings.svelte";
   import { peer, peerStatus } from "$lib/workers";
 
@@ -19,7 +21,7 @@
   bind:open={popoverOpen}
   side="right"
   sideOffset={12}
-  class="my-4 max-w-80"
+  class="my-4 w-80"
 >
   {#snippet child({ props })}
     <button
@@ -43,7 +45,7 @@
 
   <div class="flex flex-col">
     {#if connected}
-      <div class="border-b border-base-300 pb-4 mb-2 flex items-center gap-2">
+      <div class="border-b border-base-300 dark:border-base-700 pb-4 mb-2 flex items-center gap-2">
         <Avatar
           src={peerStatus.profile?.avatar}
           fallback={peerStatus.profile?.displayName}

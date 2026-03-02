@@ -16,24 +16,22 @@
   import { Virtualizer, type VirtualizerHandle } from "virtua/svelte";
   import { setContext } from "svelte";
   import { page } from "$app/state";
-  import { Button, toast } from "@fuxui/base";
+  import { toast } from "@foxui/core";
+  import Button from "$lib/components/ui/button/Button.svelte";
 
   import { IconArrowDown, IconLoading } from "@roomy/design/icons";
   import { LiveQuery } from "$lib/utils/liveQuery.svelte";
   import { sql } from "$lib/utils/sqlTemplate";
-  import { decodeTime } from "ulidx";
   import { onNavigate } from "$app/navigation";
   import type { MessagingState } from "./TimelineView.svelte";
   import { messagingState } from "./TimelineView.svelte";
   import type { Message } from "./types";
-  import {
-    mapAsyncState,
-    type AsyncState,
-    type AsyncStateWithIdle,
-  } from "@roomy/sdk";
+  import { mapAsyncState, type AsyncStateWithIdle } from "@roomy/sdk";
   import StateSuspense from "$lib/components/primitives/StateSuspense.svelte";
   import { peer } from "$lib/workers";
   import { getAppState } from "$lib/queries";
+  import ErrorModal from "$lib/components/modals/Error.svelte";
+  import ChatMessageSkeleton from "./message/ChatMessageSkeleton.svelte";
   const app = getAppState();
 
   // Lazy loading state (AsyncStateWithIdle pattern)
@@ -49,17 +47,40 @@
     if (lazyLoadState.status === "loading") return;
     if (lazyLoadState.status === "success" && !lazyLoadState.data.hasMore)
       return;
-    if (!app.joinedSpace?.id || !app.roomId) return;
+    const spaceId = app.joinedSpace?.id;
+    const roomId = app.roomId;
+    if (!spaceId || !roomId) return;
 
+    isShifting = true; // Enable shift during lazy load (prepends messages)
     lazyLoadState = { status: "loading" };
     try {
-      const result = await peer.lazyLoadRoom(app.joinedSpace.id, app.roomId);
+      const result = await tracer.startActiveSpan(
+        "Load More Messages (UI)",
+        {
+          attributes: {
+            "space.id": spaceId,
+            "room.id": roomId,
+          },
+        },
+        async (span) => {
+          const result = await peer.lazyLoadRoom(spaceId, roomId);
+          span.setAttribute("has.more", result.hasMore);
+          span.end();
+          return result;
+        },
+      );
       lazyLoadState = { status: "success", data: result };
+
+      // Keep shift enabled briefly after load completes to allow rendering
+      setTimeout(() => {
+        isShifting = false;
+      }, 500);
     } catch (e) {
       lazyLoadState = {
         status: "error",
         message: e instanceof Error ? e.message : "Failed to load messages",
       };
+      isShifting = false;
     }
   }
 
@@ -77,29 +98,29 @@
         'id', e.id,
         'content', cast(c.data as text),
         'lastEdit', c.last_edit,
-        'authorDid', u.did,
+        -- Canonical author (resolved by materializer - author edge points to override if present)
+        'authorDid', author_edge.tail,
         'authorName', i.name,
         'authorAvatar', i.avatar,
         'authorHandle', u.handle,
-        'masqueradeAuthor', o.author,
-        'masqueradeTimestamp', o.timestamp,
+        -- Canonical timestamp from comp_content (already resolved by materializer)
+        'timestamp', c.timestamp,
+        -- Simple bridged flag (check if author DID is from Discord)
+        'isBridged', author_edge.tail like 'did:discord:%',
         'replyTo', coalesce((
           select json_group_array(ed.tail)
           from edges ed
           where ed.head = e.id and ed.label = 'reply'
         ), json_array()),
-        'masqueradeAuthorName', oai.name,
-        'masqueradeAuthorAvatar', oai.avatar,
-        'masqueradeAuthorHandle', oau.handle,
         'reactions', (
           select json_group_array(json_object(
             'reaction', rc.reaction,
             'userId', rc.user,
-            'userName', i.name,
+            'userName', ri.name,
             'reactionId', rc.reaction_id
           ))
           from comp_reaction rc
-          left join comp_info i on i.entity = rc.user
+          left join comp_info ri on ri.entity = rc.user
           where rc.entity = e.id
         ),
         'media', (
@@ -153,51 +174,50 @@
           left join comp_discord_origin cdo on cdo.entity = te.tail
           where te.head = e.id and te.label = 'tag'
         )
-      ) as json, e.sort_idx as sort_idx, e.id as msg_id, author_edge.*
+      ) as json, c.timestamp as canonical_timestamp, e.id as msg_id
       from entities e -- message
         join comp_content c on c.entity = e.id -- message content
-        join edges author_edge on author_edge.head = e.id and author_edge.label = 'author' -- message author relation
+        join edges author_edge on author_edge.head = e.id and author_edge.label = 'author' -- message author relation (already resolved by materializer)
         left join comp_user u on u.did = author_edge.tail -- author user
         left join comp_info i on i.entity = author_edge.tail -- author info
-        left join comp_override_meta o on o.entity = e.id -- overridden author/timestamp
-        left join comp_info oai on oai.entity = o.author -- overridden author info
-        left join comp_user oau on oau.did = o.author -- overridden author user
         left join comp_comment cc on cc.entity = e.id -- comment
       where
         e.room = ${page.params.object}
           and
         c.data is not null
+          and
+        c.timestamp is not null -- Filter out messages without timestamps (e.g., system messages)
 
         union all
-  
+
         -- Forwarded messages: follow forward edge to get original message content
         select json_object(
           'id', fwd.id,
           'content', cast(c.data as text),
           'lastEdit', c.last_edit,
-          'authorDid', u.did,
+          -- Canonical author (resolved by materializer - author edge points to override if present)
+          'authorDid', author_edge.tail,
           'authorName', i.name,
           'authorAvatar', i.avatar,
           'authorHandle', u.handle,
-          'masqueradeAuthor', o.author,
-          'masqueradeTimestamp', o.timestamp,
+          -- Canonical timestamp from comp_content (already resolved by materializer)
+          'timestamp', c.timestamp,
+          -- Simple bridged flag (check if author DID is from Discord)
+          'isBridged', author_edge.tail like 'did:discord:%',
           'replyTo', coalesce((
             select json_group_array(ed.tail)
             from edges ed
             where ed.head = orig.id and ed.label = 'reply'
           ), json_array()),
-          'masqueradeAuthorName', oai.name,
-          'masqueradeAuthorAvatar', oai.avatar,
-          'masqueradeAuthorHandle', oau.handle,
           'reactions', (
             select json_group_array(json_object(
               'reaction', rc.reaction,
               'userId', rc.user,
-              'userName', i.name,
+              'userName', ri.name,
               'reactionId', rc.reaction_id
             ))
             from comp_reaction rc
-            join comp_info i on i.entity = rc.user
+            join comp_info ri on ri.entity = rc.user
             where rc.entity = orig.id
           ),
           'media', (
@@ -253,26 +273,25 @@
             left join comp_discord_origin cdo on cdo.entity = te.tail
             where te.head = orig.id and te.label = 'tag'
           )
-        ) as json, fwd.sort_idx as sort_idx, fwd.id as msg_id, author_edge.*
+        ) as json, c.timestamp as canonical_timestamp, fwd.id as msg_id
         from entities fwd -- forward reference entity
           join edges fwd_edge on fwd_edge.head = fwd.id and fwd_edge.label = 'forward' -- forward edge
           join entities orig on orig.id = fwd_edge.tail -- original message
           join comp_content c on c.entity = orig.id -- original message content
-          join edges author_edge on author_edge.head = orig.id and author_edge.label = 'author' -- original author
+          join edges author_edge on author_edge.head = orig.id and author_edge.label = 'author' -- original author (already resolved by materializer)
           left join comp_user u on u.did = author_edge.tail
           left join comp_info i on i.entity = author_edge.tail
-          left join comp_override_meta o on o.entity = orig.id
-          left join comp_info oai on oai.entity = o.author
-          left join comp_user oau on oau.did = o.author
         where
           fwd.room = ${page.params.object}
+          and
+          c.timestamp is not null -- Filter out messages without timestamps
 
-      order by sort_idx desc, msg_id desc
-      limit ${showLastN}
+      order by canonical_timestamp desc, msg_id desc
     `,
     (row) => {
       return JSON.parse(row.json);
     },
+    { cache: true, description: "Messages query", origin: "ChatArea.svelte" },
   );
 
   let showLastN = $state(50);
@@ -286,31 +305,24 @@
     mapAsyncState(query.current, (results) => {
       if (!results) return [];
 
-      const mapped = results.reverse().map((message, index) => {
-        // Get the previous message (if it exists)
-        const prevMessage = index > 0 ? query.result![index - 1] : null;
+      // Results come in descending order (newest first), reverse to get chronological
+      const reversed = results.toReversed();
 
-        // Normalize messages for calculating whether or not to merge them
-        const prevMessageNorm = prevMessage
-          ? {
-              author: prevMessage.masqueradeAuthor || prevMessage.authorDid,
-              timestamp:
-                parseInt(prevMessage.masqueradeTimestamp || "0") ||
-                decodeTime(prevMessage.id),
-            }
-          : undefined;
-        const messageNorm = {
-          author: message.masqueradeAuthor || message.authorDid,
-          timestamp:
-            parseInt(message.masqueradeTimestamp || "0") ||
-            decodeTime(message.id),
-        };
+      const mapped = reversed.map((message, index) => {
+        // Get the previous message from the reversed array (if it exists)
+        const prevMessage = index > 0 ? reversed[index - 1] : null;
 
         // Calculate mergeWithPrevious
-        let mergeWithPrevious =
-          prevMessageNorm?.author == messageNorm.author &&
-          messageNorm.timestamp - (prevMessageNorm?.timestamp || 0) <
-            1000 * 60 * 5;
+        // Merge if same author AND within 5 minutes AND both authors exist
+        let mergeWithPrevious: boolean | null = false;
+        if (
+          prevMessage &&
+          message.authorDid &&
+          prevMessage.authorDid === message.authorDid &&
+          message.timestamp - prevMessage.timestamp < 1000 * 60 * 5
+        ) {
+          mergeWithPrevious = true;
+        }
 
         return {
           ...message,
@@ -321,30 +333,22 @@
       return mapped;
     }),
   );
-  let slicedTimeline = $derived(
+
+  // Messages to display - ensures the Virtualizer gets proper reactivity when data changes
+  // This is computed as a derived state rather than a {@const} in the template to ensure
+  // the Virtualizer is properly notified of data changes
+  let displayMessages = $derived(
     mapAsyncState(timeline, (t) => t.slice(-showLastN)),
   );
-  // let isShowingFirstMessage = $derived(
-  //   mapAsyncState(timeline, (t) => !t.length),
-  // );
+
+
+
   let viewport: HTMLDivElement = $state(null!);
 
   // Track initial load for auto-scroll
   let hasInitiallyScrolled = $state(false);
-  // // Handle new messages - only auto-scroll if user is at bottom
-  let lastTimelineLength: AsyncState<number> = $derived.by(() => {
-    return mapAsyncState(timeline, (t) => {
-      if (
-        isAtBottom &&
-        virtualizer &&
-        lastTimelineLength.status === "success" &&
-        lastTimelineLength.data > 0
-      ) {
-        setTimeout(() => scrollToBottom(), 50);
-      }
-      return t.length;
-    });
-  });
+  // Track timeline length to detect new messages
+  let prevTimelineLength = $state(0);
 
   // Lifted state for editing messages
   let editingMessageId = $state("");
@@ -373,8 +377,10 @@
   }
 
   function scrollToBottom() {
-    if (!virtualizer || timeline.status !== "success") return;
-    virtualizer.scrollToIndex(timeline.data.length - 1, { align: "start" });
+    if (!virtualizer || displayMessages.status !== "success") return;
+    virtualizer.scrollToIndex(displayMessages.data.length - 1, {
+      align: "start",
+    });
     isAtBottom = true;
   }
 
@@ -386,13 +392,13 @@
   }
 
   function scrollToMessage(id: string) {
-    if (slicedTimeline.status !== "success") return;
-    const message = slicedTimeline.data.find((msg) => id === msg.id);
+    if (displayMessages.status !== "success") return;
+    const message = displayMessages.data.find((msg) => id === msg.id);
     if (!message) {
       toast.error("Message not found");
       return;
     }
-    const idx = slicedTimeline.data.indexOf(message);
+    const idx = displayMessages.data.indexOf(message);
     if (idx >= 0) virtualizer?.scrollToIndex(idx);
     else {
       toast.error("Message not found");
@@ -407,12 +413,12 @@
     hasInitiallyScrolled = false; // Reset for new route
   });
 
-  // // Simple initial scroll to bottom when timeline first loads
+  // Simple initial scroll to bottom when timeline first loads
   $effect(() => {
     if (
       !hasInitiallyScrolled &&
-      timeline.status === "success" &&
-      timeline.data.length > 0 &&
+      displayMessages.status === "success" &&
+      displayMessages.data.length > 0 &&
       virtualizer
     ) {
       setTimeout(() => {
@@ -423,34 +429,19 @@
     chatArea.scrollToMessage = scrollToMessage;
   });
 
-  let isShiftingFromShowLastN = $state(false);
-  let isShiftingFromLazyLoad = $state(false);
-  let lastShowLastN = $state(0);
-
+  // Auto-scroll to bottom when new messages arrive and user is already at bottom
   $effect(() => {
-    if (showLastN > lastShowLastN) {
-      lastShowLastN = showLastN;
-      isShiftingFromShowLastN = true;
-      setTimeout(() => (isShiftingFromShowLastN = false), 1000);
+    if (displayMessages.status !== "success") return;
+    const len = displayMessages.data.length;
+    if (len > prevTimelineLength && prevTimelineLength > 0 && isAtBottom) {
+      scrollToBottom();
     }
+    prevTimelineLength = len;
   });
 
-  // Keep shift mode enabled during lazy load AND briefly after it completes
-  // (new messages need time to render before we can disable shift)
-  $effect(() => {
-    if (isLazyLoading) {
-      isShiftingFromLazyLoad = true;
-    } else if (isShiftingFromLazyLoad) {
-      // Delay disabling shift to allow messages to render
-      setTimeout(() => (isShiftingFromLazyLoad = false), 500);
-    }
-  });
-
-  // Enable shift mode when lazy loading OR when showLastN increases
-  // This preserves scroll position when messages are prepended at the top
-  const isShifting = $derived(
-    isShiftingFromLazyLoad || isShiftingFromShowLastN,
-  );
+  // Track shifting state for prepend operations (lazy load)
+  // We only want shift=true when messages are prepended at the top, not when new messages arrive at bottom
+  let isShifting = $state(false);
 
   // Track which room we've loaded for to prevent re-triggering
   let lastLoadedRoomId: string | undefined;
@@ -468,7 +459,20 @@
 
     // Reset state for new room
     lazyLoadState = { status: "idle" };
-    loadMoreMessages();
+  });
+
+  // Trigger lazy load when materialized data can't fill the current window.
+  // When the query returns fewer rows than showLastN, we've exhausted what's
+  // in SQLite and need the backend to materialize more events from the stream.
+  $effect(() => {
+    if (
+      timeline.status === "success" &&
+      timeline.data.length < showLastN &&
+      hasMoreHistory &&
+      !isLazyLoading
+    ) {
+      loadMoreMessages();
+    }
   });
 </script>
 
@@ -482,6 +486,16 @@
     {/if}
   </div>
 
+  {#snippet messagesSkeleton()}
+    <div class="flex flex-col justify-end w-full h-full bg-transparent">
+      <ChatMessageSkeleton />
+      <ChatMessageSkeleton lines={3} />
+      <ChatMessageSkeleton lines={1} />
+      <ChatMessageSkeleton />
+      <ChatMessageSkeleton mergeWithPrevious />
+    </div>
+  {/snippet}
+
   <ScrollArea.Root type="auto" class="h-full overflow-hidden">
     <ScrollArea.Viewport
       bind:ref={viewport}
@@ -489,12 +503,12 @@
       onscroll={handleScroll}
     >
       <div class="flex flex-col w-full h-full pb-16 pt-2">
-        <StateSuspense state={timeline}>
-          {#snippet children(timeline)}
-            <ol class="flex flex-col gap-2 max-w-full">
+        <StateSuspense state={displayMessages} pending={messagesSkeleton}>
+          {#snippet children(messages)}
+            <ol class="flex flex-col justify-end gap-2 max-w-full h-full">
               <StateSuspense state={lazyLoadState}>
                 {#snippet children()}
-                  {#if timeline.length === 0}
+                  {#if messages.length === 0}
                     <p class="opacity-80 p-4 text-center text-sm">
                       No messages here yet. This is the beginning of something
                       beautiful.
@@ -519,52 +533,51 @@
                   </div>
                 {/snippet}
               </StateSuspense>
-              {#if timeline.length > 0}
-                {#key viewport}
-                  {#if timeline.length > 0}
-                    <Virtualizer
-                      bind:this={virtualizer}
-                      data={timeline}
-                      scrollRef={viewport}
-                      overscan={5}
-                      shift={isShifting}
-                      getKey={(x) => {
-                        return x?.id;
-                      }}
-                      onscroll={(o) => {
-                        if (o < 100 && !isLazyLoading && hasMoreHistory) {
-                          loadMoreMessages();
-                        }
-                        if (o < 100) showLastN += 50;
-                      }}
-                    >
-                      {#snippet children(message?: Message)}
-                        {#if message}
-                          <ChatMessage
-                            {message}
-                            messagingState={messagingStateProp}
-                            onOpenMobileMenu={openMobileMenu}
-                            {editingMessageId}
-                            onStartEdit={(id) => (editingMessageId = id)}
-                            onCancelEdit={() => (editingMessageId = "")}
-                          />
-                        {/if}
-                      {/snippet}
-                    </Virtualizer>
-                  {/if}
-                {/key}
+
+              {#if messages.length > 0}
+                <!--
+                  The Virtualizer needs a stable scrollRef to function correctly.
+                  We guard its creation until viewport is available to prevent virtua from
+                  trying to access parentElement on a null containerRef.
+                -->
+                {#if viewport}
+                  <Virtualizer
+                    bind:this={virtualizer}
+                    data={messages}
+                    scrollRef={viewport}
+                    overscan={5}
+                    shift={isShifting}
+                    getKey={(x) => {
+                      return x.id;
+                    }}
+                    onscroll={(o) => {
+                      if (o < 100 && messages.length >= showLastN) {
+                        showLastN += 50;
+                      }
+                    }}
+                  >
+                    {#snippet children(message?: Message)}
+                      {#if message}
+                        <ChatMessage
+                          {message}
+                          messagingState={messagingStateProp}
+                          onOpenMobileMenu={openMobileMenu}
+                          {editingMessageId}
+                          onStartEdit={(id) => (editingMessageId = id)}
+                          onCancelEdit={() => (editingMessageId = "")}
+                        />
+                      {/if}
+                    {/snippet}
+                  </Virtualizer>
+                {/if}
               {/if}
             </ol>
           {/snippet}
-          {#snippet pending()}
-            <div
-              class="grid items-center justify-center h-full w-full min-h-32 bg-transparent"
-            >
-              <IconLoading
-                font-size="2em"
-                class="animate-spin text-base-600 dark:text-base-400"
-              />
-            </div>
+          {#snippet error(e)}
+            <ErrorModal
+              message={"Failed to get chat messages: " + e.message}
+              goHome
+            />
           {/snippet}
         </StateSuspense>
       </div>

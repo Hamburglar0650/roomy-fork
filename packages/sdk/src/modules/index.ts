@@ -93,6 +93,7 @@ const metadataQueryEvents: Event["$type"][] = [
   // 'space.roomy.room.addMember.v0',
   // 'space.roomy.room.removeMember.v0',
   "space.roomy.user.updateProfile.v0",
+  "space.roomy.openmeet.configure.v0",
 ];
 
 const metadataQueryEventsString = "'" + metadataQueryEvents.join("', '") + "'";
@@ -173,6 +174,18 @@ const spaceModuleDef: BasicModule = {
     where exists (select 1 from admins)
       and (select event_type from event_info) in ('space.roomy.space.addAdmin.v0', 'space.roomy.space.removeAdmin.v0')
       and not exists (select 1 from admins where user_id = (select author from event_info));
+
+    -- Case 3: Only admins can configure OpenMeet calendar link
+    with event_info as (
+      select
+        drisl_extract(payload, '.$type') as event_type,
+        user as author
+      from event
+    )
+    select unauthorized('must be admin to configure calendar')
+    where exists (select 1 from admins)
+      and (select event_type from event_info) = 'space.roomy.openmeet.configure.v0'
+      and not exists (select 1 from admins where user_id = (select author from event_info));
   `.sql,
 
   materializer: `
@@ -224,7 +237,7 @@ const spaceModuleDef: BasicModule = {
     select idx, drisl_extract(payload, '.room') from event
     where drisl_extract(payload, '.room') is not null;
 
-    -- Mark link events
+    -- Track link events
     insert into link_events (idx)
     select idx from event
     where drisl_extract(payload, '.$type') in (

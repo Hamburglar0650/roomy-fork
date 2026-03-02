@@ -6,9 +6,10 @@
   const app = getAppState();
   import SpaceSidebarHeader from "./SpaceSidebarHeader.svelte";
   import EditRoomModal from "../modals/EditRoomModal.svelte";
-  import { Button } from "@fuxui/base";
+  import Button from "$lib/components/ui/button/Button.svelte";
 
   import {
+    IconCalendar,
     IconCheck,
     IconHome,
     IconHashtag,
@@ -25,6 +26,7 @@
     SHADOW_ITEM_MARKER_PROPERTY_NAME,
   } from "svelte-dnd-action";
   import { peer } from "$lib/workers";
+  import { calendarLinkQuery } from "$lib/queries/calendar.svelte";
   // at the top level there can be categories, channels or pages
   // under categories there can be channels or pages
   // under channels there can be threads or pages
@@ -134,6 +136,16 @@
       .filter((c): c is NonNullable<typeof c> => c != null);
   });
 
+  let spaceId = $derived(app.joinedSpace?.id);
+  let calendarLink = $derived(
+    flags.calendar && spaceId && calendarLinkQuery(spaceId),
+  );
+  // Check whether a calendar has been connected to this space
+  let hasCalendar = $derived(
+    (calendarLink && calendarLink.result && calendarLink.result.length) ||
+      0 > 0,
+  );
+
   // Update the effect that initializes draft state
   $effect(() => {
     if (isEditing && !draftOrder) {
@@ -190,12 +202,25 @@
       <Button
         class="w-full justify-start mb-2"
         variant="ghost"
-        href={`/${page.params.space}`}
-        data-current={!page.params.object}
+        href={`/${page.params.space}/index`}
+        data-current={page.url.pathname == `/${page.params.space}/index`}
       >
         <IconHome class="shrink-0" />
         Index
       </Button>
+
+      <!-- Show the events link if we have a calendar configured. -->
+      {#if hasCalendar}
+        <Button
+          class="w-full justify-start mb-2"
+          variant="ghost"
+          href={`/${page.params.space}/calendar`}
+          data-current={page.url.pathname == `/${page.params.space}/calendar`}
+        >
+          <IconCalendar class="shrink-0" />
+          Events
+        </Button>
+      {/if}
 
       <hr class="my-2 border-base-800/10 dark:border-base-100/5" />
     {/if}

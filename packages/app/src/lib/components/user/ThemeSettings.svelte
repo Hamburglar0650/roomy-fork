@@ -6,8 +6,8 @@
     AccordionItem,
     AccordionTrigger,
     AccordionContent,
-    ThemeToggle,
-  } from "@fuxui/base";
+  } from "@foxui/core";
+  import ThemeToggle from "$lib/components/ui/theme-toggle/ThemeToggle.svelte";
   import { onMount } from "svelte";
 
   const accentColors = [
@@ -102,7 +102,7 @@
         </div>
       </AccordionTrigger>
       <AccordionContent class="pt-0 pb-3">
-        <div class="flex overflow-x-auto gap-3 py-1.5">
+        <div class="flex overflow-x-auto gap-3 px-2 py-1.5">
           {#each accentColors as color}
             <button
               type="button"
@@ -130,7 +130,7 @@
         </div>
       </AccordionTrigger>
       <AccordionContent class="pt-0 pb-3">
-        <div class="flex overflow-x-auto gap-3 py-1.5">
+        <div class="flex overflow-x-auto gap-3 px-2 py-1.5">
           {#each baseColors as color}
             <button
               type="button"

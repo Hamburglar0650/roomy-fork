@@ -28,7 +28,9 @@
   import { sql } from "$lib/utils/sqlTemplate";
   import { navigate, scrollContainerRef } from "$lib/utils.svelte";
 
-  import { Input, Modal, Button, toast } from "@fuxui/base";
+  import { Modal, toast } from "@foxui/core";
+  import Input from "$lib/components/ui/input/Input.svelte";
+  import Button from "$lib/components/ui/button/Button.svelte";
   import TimelineView from "$lib/components/content/thread/TimelineView.svelte";
   import MainLayout from "$lib/components/layout/MainLayout.svelte";
   import SidebarMain from "$lib/components/sidebars/SpaceSidebar.svelte";
@@ -87,6 +89,10 @@
     where e.id = ${app.roomId}
   `,
     (row) => JSON.parse(row.json),
+    {
+      description: "Room: name, kind, spaceId and lastRead",
+      origin: "routes/(app)/space/object/+page.svelte",
+    },
   );
   const room = $derived(roomQuery.result?.[0]);
   const ref = $derived($scrollContainerRef);
@@ -223,7 +229,7 @@
       </h2>
 
       {#if spaceId && peerStatus.authState?.state === "loading"}
-        <div class="dark:!text-base-400 !text-base-600 mx-3">
+        <div class="dark:text-base-400 text-base-600 mx-3">
           Downloading Entire Space...
         </div>
       {:else if room?.kind == "space.roomy.thread"}
@@ -408,11 +414,6 @@
       {:else}
         <PageHistory />
       {/if}
-    {:else}
-      <Error
-        message="Oh no! We had an issue getting the data for this room 😬"
-        goHome
-      />
     {/if}
   </MainLayout>
 {/if}

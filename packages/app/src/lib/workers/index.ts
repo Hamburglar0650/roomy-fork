@@ -62,6 +62,8 @@ export const peer = tracer.startActiveSpan(
     // Create a message channel for the peer communication
     const channel = new MessageChannel();
 
+    console.log("page.params.space", page.params.space);
+
     // Create a peer implementation and connect it to the channel
     const peerImpl = new Peer({ sessionId: newUlid() });
     peerImpl.connectRpcClient(channel.port1);
@@ -72,6 +74,20 @@ export const peer = tracer.startActiveSpan(
       localName: "main",
       remoteName: "peer",
       messagePort: channel.port2,
+      timeout: {
+        ms: 5000,
+        onTimeout: (method, reqId) => {
+          if (method !== "log")
+            console.warn(`RPC Timeout [peer <- main]`, {
+              method,
+              reqId,
+            });
+        },
+        // Lazy loading may take longer due to materialization
+        methodTimeouts: {
+          lazyLoadRoom: 60000, // 60 seconds
+        },
+      },
       handlers: {
         async log(level, args) {
           const text = Array.isArray(args) ? args[0] : args;
@@ -88,6 +104,7 @@ export const peer = tracer.startActiveSpan(
             id,
             attributes: { isSampled: "true" },
           });
+          console.log("[Peer Status] updating channel with session", id);
           peerStatus.updateChannel(peerStatusChannel(id));
         },
         async initFinished({ userDid }) {

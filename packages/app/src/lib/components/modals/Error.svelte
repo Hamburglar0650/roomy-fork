@@ -1,24 +1,28 @@
 <script lang="ts">
-  import { Alert, Button } from "@fuxui/base";
+  import { Alert } from "$lib/components/ui/alert";
+  import Button from "$lib/components/ui/button/Button.svelte";
+  import type { Snippet } from "svelte";
 
   let {
     message,
+    children,
     goHome,
     tellUs = true,
   } = $props<{
-    message: string;
+    message?: string;
+    children?: Snippet;
     goHome?: boolean;
     tellUs?: boolean;
   }>();
 </script>
 
 <div class="w-full h-screen flex items-center justify-center">
-  <Alert
-    title="Error"
-    type="error"
-    class="max-w-sm text-ellipsis overflow-x-clip"
-  >
-    <h6 class="mb-2 max-w-full text-ellipsis overflow-hidden">{message}</h6>
+  <Alert title="Something went wrong :(" class="max-w-sm" type="error">
+    {#if children}
+      {@render children()}
+    {:else if message}
+      <h6 class="mb-2 max-w-full text-ellipsis overflow-hidden">{message}</h6>
+    {/if}
     {#if tellUs}
       <span
         >You can let us know on <a

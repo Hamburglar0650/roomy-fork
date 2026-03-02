@@ -1,13 +1,18 @@
 <script lang="ts">
-  import { Button } from "@fuxui/base";
+  import Button from "$lib/components/ui/button/Button.svelte";
   import MainLayout from "$lib/components/layout/MainLayout.svelte";
   import SpaceButton from "$lib/components/spaces/SpaceButton.svelte";
   import EarlyAlphaWarning from "$lib/components/helper/EarlyAlphaWarning.svelte";
   import { getAppState } from "$lib/queries";
+  import { peer } from "$lib/workers";
 
   const app = getAppState();
 
   import { IconPlus } from "@roomy/design/icons";
+
+  $effect(() => {
+    peer.setCurrentSpace(undefined);
+  });
 </script>
 
 <MainLayout>

@@ -98,7 +98,8 @@ create table if not exists comp_content (
   entity text primary key references entities(id) on delete cascade,
   mime_type text,
   data blob,
-  last_edit text not null, -- ID of most recent edit event 
+  last_edit text not null, -- ID of most recent edit event
+  timestamp integer, -- Canonical message timestamp (milliseconds since epoch), resolves override if present
   created_at integer not null default (unixepoch() * 1000),
   updated_at integer not null default (unixepoch() * 1000)
 ) strict;
@@ -112,14 +113,6 @@ create table if not exists comp_info (
   name text,
   avatar text,
   description text,
-  created_at integer not null default (unixepoch() * 1000),
-  updated_at integer not null default (unixepoch() * 1000)
-) strict;
-
-create table if not exists comp_override_meta (
-  entity text primary key references entities(id) on delete cascade,
-  author text references entities(id), -- did
-  timestamp integer,
   created_at integer not null default (unixepoch() * 1000),
   updated_at integer not null default (unixepoch() * 1000)
 ) strict;
@@ -212,4 +205,26 @@ create table if not exists comp_reaction (
 ) strict;
 
 create index if not exists idx_comp_last_read_timestamp on comp_last_read(timestamp);
-  
+
+-- OpenMeet calendar integration
+create table if not exists comp_calendar_link (
+  entity text primary key,
+  group_slug text not null,
+  tenant_id text not null,
+  api_url text not null
+) strict;
+
+create table if not exists comp_calendar_event (
+  entity text primary key,
+  slug text not null,
+  name text not null,
+  start_date text not null,
+  end_date text,
+  location text,
+  location_online text,
+  status text not null default 'Published',
+  synced_at integer not null
+) strict;
+
+create index if not exists idx_calendar_event_start
+  on comp_calendar_event(start_date);

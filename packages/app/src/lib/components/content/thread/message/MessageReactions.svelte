@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { PopoverEmojiPicker } from "@fuxui/social";
-  import { Button, Toggle, Tooltip } from "@fuxui/base";
+  import { PopoverEmojiPicker } from "@foxui/social";
+  import { Toggle } from "@foxui/core";
+  import Tooltip from "$lib/components/helper/Tooltip.svelte";
+  import Button from "$lib/components/ui/button/Button.svelte";
   import { IconSmilePlus } from "@roomy/design/icons";
   import { getAppState } from "$lib/queries";
   const app = getAppState();
@@ -67,10 +69,9 @@
 {#if message.reactions.length > 0}
   <div class="flex gap-2 flex-wrap pl-14 z-10">
     {#each Object.entries(sortedReactions) as [emoji, users]}
-      <Tooltip text={emoji + " " + Object.values(users).join(", ")}>
-        {#snippet child({ props })}
+      <Tooltip tip={emoji + " " + Object.values(users).join(", ")}>
+        {#snippet children()}
           <Toggle
-            {...props}
             pressed={app.did! in users}
             onclick={() => onEmojiButtonClick(emoji)}
             class="px-2 h-7 data-[state=on]:bg-accent-400/20 dark:data-[state=on]:bg-accent-500/15"
